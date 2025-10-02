@@ -345,7 +345,8 @@
                 ? "Please paste your Firebase project configuration into the 'firebaseConfig' object in the script."
                 : "Please paste your Alpha Vantage API key into the 'ALPHA_VANTAGE_API_KEY' constant in the script.";
             
-            loadingText.innerHTML = `...`; // Simplified error
+            loadingText.innerHTML = `<div class="text-center p-4 bg-gray-800 rounded-lg"><i data-lucide="alert-triangle" class="text-red-500 w-16 h-16 mx-auto mb-4"></i><h2 class="text-2xl font-bold text-white mb-2">Configuration Needed</h2><p class="text-gray-300">${errorMsg}</p></div>`;
+            lucide.createIcons();
             throw new Error("API key configuration is missing.");
         }
 
@@ -445,11 +446,45 @@
                     </li>`;
                 watchlistBody.innerHTML += item;
             });
-            lucide.createIcons();
         }
 
         function renderAllocationChart() {
-            // ... (rest of the function is unchanged)
+            const allocCtx = document.getElementById('allocationChart');
+            const allocationLegend = document.getElementById('allocation-legend');
+            
+            breakdownData.forEach(cat => cat.value = 0);
+            holdingsData.forEach(holding => {
+                const category = breakdownData.find(cat => cat.category === holding.category);
+                if(category) category.value += holding.value;
+            });
+            
+            if (allocationChartInstance) allocationChartInstance.destroy();
+            
+            allocationChartInstance = new Chart(allocCtx, {
+                type: 'doughnut', 
+                data: { 
+                    labels: breakdownData.map(d => d.category), 
+                    datasets: [{ 
+                        data: breakdownData.map(d => d.value), 
+                        backgroundColor: breakdownData.map(d => d.color), 
+                        borderWidth: 0, 
+                        hoverOffset: 4 
+                    }] 
+                },
+                options: { responsive: true, cutout: '70%', plugins: { legend: { display: false } } }
+            });
+
+            allocationLegend.innerHTML = '';
+            const totalAllocationValue = breakdownData.reduce((sum, item) => sum + item.value, 0);
+            if (totalAllocationValue > 0) {
+                breakdownData.forEach(item => {
+                    if (item.value > 0) {
+                        const percentage = (item.value / totalAllocationValue) * 100;
+                        const legendItem = `<div class="flex items-center justify-between text-sm"><div class="flex items-center"><span class="w-3 h-3 rounded-full mr-2" style="background-color: ${item.color};"></span><span class="text-gray-400">${item.category}</span></div><span class="font-semibold text-white">${percentage.toFixed(1)}%</span></div>`;
+                        allocationLegend.innerHTML += legendItem;
+                    }
+                });
+            }
         }
 
         function renderHistoryTable() {
@@ -475,37 +510,31 @@
             lucide.createIcons();
         }
 
-
         function updateUI() {
             renderHoldingsTable();
             renderSummaryCards();
-            // renderAllocationChart(); // This should be called after holdings are calculated
+            renderAllocationChart();
             renderWatchlist();
             renderHistoryTable();
             lucide.createIcons();
         }
         
-        async function recalculateHoldingsFromTransactions(tickerToUpdate) {
+        async function recalculateHoldingsFromTransactions() {
             if (!userId) return;
 
             const transactionsRef = collection(db, 'users', userId, 'transactions');
-            const q = query(transactionsRef, orderBy('date'));
+            const q = query(transactionsRef, orderBy('date'), orderBy('createdAt'));
             const querySnapshot = await getDocs(q);
             
             const allDbTransactions = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-            const holdings = allDbTransactions.reduce((acc, t) => {
-                const { ticker, type, quantity, price } = t;
+            const holdingsMap = allDbTransactions.reduce((acc, t) => {
+                const { ticker, type, quantity, price, category } = t;
                 const total = quantity * price;
 
                 if (!acc[ticker]) {
                     acc[ticker] = {
-                        ticker,
-                        name: t.name || ticker,
-                        category: t.category,
-                        quantity: 0,
-                        costBasis: 0,
-                        // Keep live data if it exists
+                        ticker, name: t.name || ticker, category, quantity: 0, costBasis: 0,
                         price: holdingsData.find(h => h.ticker === ticker)?.price || price,
                         change: holdingsData.find(h => h.ticker === ticker)?.change || 0,
                     };
@@ -514,8 +543,8 @@
                 if (type === 'Buy') {
                     acc[ticker].quantity += quantity;
                     acc[ticker].costBasis += total;
-                } else { // Sell
-                    const avgCost = acc[ticker].costBasis / acc[ticker].quantity;
+                } else {
+                    const avgCost = acc[ticker].quantity > 0 ? acc[ticker].costBasis / acc[ticker].quantity : 0;
                     acc[ticker].costBasis -= quantity * avgCost;
                     acc[ticker].quantity -= quantity;
                 }
@@ -523,16 +552,13 @@
                 return acc;
             }, {});
 
-            // Update holdings in Firestore
             const batch = writeBatch(db);
             const holdingsRef = collection(db, 'users', userId, 'holdings');
             
-            // First, delete all existing holdings in batch
             const existingHoldingsSnap = await getDocs(holdingsRef);
             existingHoldingsSnap.forEach(doc => batch.delete(doc.ref));
 
-            // Now, add the recalculated holdings in batch
-            Object.values(holdings).forEach(holding => {
+            Object.values(holdingsMap).forEach(holding => {
                 if (holding.quantity > 0.00000001) {
                     const newHoldingRef = doc(holdingsRef);
                     holding.value = holding.quantity * holding.price;
@@ -546,15 +572,70 @@
 
         async function processTransaction(transaction) {
             if (!userId) return;
-            const { ticker } = transaction;
             const transactionsRef = collection(db, 'users', userId, 'transactions');
-            
             await addDoc(transactionsRef, { ...transaction, createdAt: serverTimestamp() });
-            await recalculateHoldingsFromTransactions(ticker);
+            await recalculateHoldingsFromTransactions();
         }
         
-        // --- Live Market Data Functions ---
-        // ... (unchanged)
+        async function fetchQuote(ticker, category = 'Stocks') {
+            let url;
+            if (category === 'Crypto') {
+                url = `https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=${ticker}&to_currency=USD&apikey=${ALPHA_VANTAGE_API_KEY}`;
+            } else { // Stocks & ETFs
+                url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${ALPHA_VANTAGE_API_KEY}`;
+            }
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data["Error Message"] || data["Note"]) {
+                    console.warn(`Alpha Vantage API error for ${ticker}:`, data["Note"] || data["Error Message"]);
+                    return null;
+                }
+                
+                if (category === 'Crypto') {
+                    const quote = data["Realtime Currency Exchange Rate"];
+                    return { price: parseFloat(quote["5. Exchange Rate"]), change: 0, name: quote["2. From_Currency Name"] };
+                } else {
+                    const quote = data["Global Quote"];
+                     return { price: parseFloat(quote["05. price"]), change: parseFloat(quote["10. change percent"].replace('%', '')), name: null };
+                }
+            } catch (error) { console.error(`Failed to fetch quote for ${ticker}:`, error); return null; }
+        }
+        
+        async function updateMarketData() {
+            if (!userId) return;
+            console.log("Starting market data update...");
+            document.getElementById('last-update-time').textContent = new Date().toLocaleTimeString();
+
+            const allAssets = [...holdingsData, ...watchlistData];
+            const uniqueTickers = [...new Set(allAssets.map(a => a.ticker))];
+            
+            const batch = writeBatch(db);
+
+            for (const ticker of uniqueTickers) {
+                const asset = allAssets.find(a => a.ticker === ticker);
+                const quote = await fetchQuote(ticker, asset.category);
+
+                if (quote) {
+                    holdingsData.filter(h => h.ticker === ticker).forEach(holding => {
+                        const docRef = doc(db, 'users', userId, 'holdings', holding.id);
+                        batch.update(docRef, { price: quote.price, change: quote.change, value: holding.quantity * quote.price });
+                    });
+                    watchlistData.filter(w => w.ticker === ticker).forEach(item => {
+                        const docRef = doc(db, 'users', userId, 'watchlist', item.id);
+                        batch.update(docRef, { price: quote.price, change: quote.change, name: quote.name || item.name });
+                    });
+                }
+                await new Promise(res => setTimeout(res, 15000)); // Respect API rate limit
+            }
+
+            try {
+                await batch.commit();
+                console.log("Market data batch update successful.");
+            } catch (error) { console.error("Batch update failed:", error); }
+        }
 
         // --- Authentication and Initialization ---
         onAuthStateChanged(auth, user => {
@@ -562,32 +643,17 @@
                 userId = user.uid;
                 document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
 
-                // Unsubscribe from old listeners
                 if (holdingsUnsubscribe) holdingsUnsubscribe();
                 if (watchlistUnsubscribe) watchlistUnsubscribe();
                 if (transactionsUnsubscribe) transactionsUnsubscribe();
 
-                // Listen to holdings
                 const holdingsRef = collection(db, "users", userId, "holdings");
                 holdingsUnsubscribe = onSnapshot(holdingsRef, (snapshot) => {
                     holdingsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    renderHoldingsTable();
-                    renderSummaryCards();
-                    // renderAllocationChart needs to be here to react to holding changes
-                    const allocCtx = document.getElementById('allocationChart');
-                    const allocationLegend = document.getElementById('allocation-legend');
-                    breakdownData.forEach(cat => cat.value = 0);
-                    holdingsData.forEach(holding => {
-                        const category = breakdownData.find(cat => cat.category === holding.category);
-                        if(category) category.value += holding.value;
-                    });
-                    if (allocationChartInstance) allocationChartInstance.destroy();
-                    allocationChartInstance = new Chart(allocCtx, { /* ... chart config ... */ });
-                    // ... legend logic ...
+                    updateUI();
                     
-                    const loadingOverlay = document.getElementById('loading-overlay');
-                    loadingOverlay.style.opacity = '0';
-                    setTimeout(() => loadingOverlay.classList.add('hidden'), 500);
+                    document.getElementById('loading-overlay').style.opacity = '0';
+                    setTimeout(() => document.getElementById('loading-overlay').classList.add('hidden'), 500);
                     document.getElementById('main-content').style.opacity = '1';
 
                     if (!marketUpdateInterval) {
@@ -596,14 +662,12 @@
                     }
                 });
 
-                // Listen to watchlist
                 const watchlistRef = collection(db, "users", userId, "watchlist");
                 watchlistUnsubscribe = onSnapshot(watchlistRef, (snapshot) => {
                     watchlistData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     renderWatchlist();
                 });
 
-                // Listen to transactions for history modal
                 const transactionsRef = collection(db, "users", userId, "transactions");
                 const q = query(transactionsRef, orderBy("date", "desc"));
                 transactionsUnsubscribe = onSnapshot(q, (snapshot) => {
@@ -611,14 +675,18 @@
                     renderHistoryTable();
                 });
 
-
             } else {
                 signInAnonymously(auth).catch(error => {
-                    // ... (error handling unchanged)
+                    if (error.code === 'auth/configuration-not-found') {
+                       const loadingSpinner = document.getElementById('loading-spinner');
+                        const loadingText = document.getElementById('loading-text');
+                        loadingSpinner.style.display = 'none';
+                        loadingText.innerHTML = `<div class="text-center p-4 bg-gray-800 rounded-lg"><i data-lucide="user-x" class="text-yellow-500 w-16 h-16 mx-auto mb-4"></i><h2 class="text-2xl font-bold text-white mb-2">Authentication Not Enabled</h2><p class="text-gray-300">Please go to your Firebase Console, open 'Authentication' > 'Sign-in method', and enable the 'Anonymous' provider.</p></div>`;
+                        lucide.createIcons();
+                    }
                 });
             }
         });
-
 
         // --- Event Listeners ---
         const transactionForm = document.getElementById('transaction-form');
@@ -635,7 +703,6 @@
             document.getElementById('transaction-modal').classList.add('hidden');
         });
         
-        // History Modal Logic
         const historyBtn = document.getElementById('history-btn');
         const historyModal = document.getElementById('history-modal');
         const closeHistoryModalBtn = document.getElementById('close-history-modal-btn');
@@ -649,16 +716,77 @@
                 const docId = deleteButton.dataset.id;
                 const transactionToDelete = allTransactions.find(t => t.id === docId);
                 if (docId && transactionToDelete) {
-                    // Simple confirmation
                     if (confirm(`Are you sure you want to delete the ${transactionToDelete.ticker} transaction? This will permanently affect your holdings calculation.`)) {
                          await deleteDoc(doc(db, 'users', userId, 'transactions', docId));
-                         await recalculateHoldingsFromTransactions(transactionToDelete.ticker);
+                         await recalculateHoldingsFromTransactions();
                     }
                 }
             }
         });
         
-        // ... (other event listeners unchanged)
+        const addTransactionBtn = document.getElementById('add-transaction-btn');
+        addTransactionBtn.addEventListener('click', () => {
+             document.getElementById('transaction-modal-title').textContent = "Add New Transaction";
+             document.getElementById('transaction-submit-btn').textContent = "Log Transaction";
+             document.getElementById('transaction-form').reset();
+             document.getElementById('date').valueAsDate = new Date();
+             document.getElementById('transaction-modal').classList.remove('hidden');
+        });
+
+        const closeModalBtn = document.getElementById('close-modal-btn');
+        closeModalBtn.addEventListener('click', () => document.getElementById('transaction-modal').classList.add('hidden'));
+
+        const addWatchlistForm = document.getElementById('add-watchlist-form');
+        addWatchlistForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!userId) return;
+            const tickerInput = document.getElementById('watchlist-ticker-input');
+            const newTicker = tickerInput.value.trim().toUpperCase();
+            if (newTicker) {
+                if (watchlistData.some(item => item.ticker === newTicker)) { tickerInput.value = ''; return; }
+                const watchlistRef = collection(db, 'users', userId, 'watchlist');
+                const quote = await fetchQuote(newTicker);
+                
+                await addDoc(watchlistRef, {
+                    ticker: newTicker, name: quote ? (quote.name || 'New Asset') : 'New Asset',
+                    price: quote ? quote.price : 0, change: quote ? quote.change : 0,
+                    createdAt: serverTimestamp()
+                });
+                tickerInput.value = '';
+            }
+        });
+
+        const watchlistBody = document.getElementById('watchlist-body');
+        watchlistBody.addEventListener('click', async (e) => {
+            const removeButton = e.target.closest('.remove-watchlist-item');
+            if (removeButton && userId) {
+                const docId = removeButton.dataset.id;
+                if (docId) {
+                    await deleteDoc(doc(db, 'users', userId, 'watchlist', docId));
+                }
+            }
+        });
+
+        const perfCtx = document.getElementById('performanceChart');
+        const performanceData = { '1M': { labels: ['W1', 'W2', 'W3', 'W4'], data: [148, 149, 148, 150] },'6M': { labels: ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'], data: [135, 139, 138, 142, 147, 150] },'1Y': { labels: ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'], data: [125, 128, 127, 131, 135, 139, 138, 142, 147, 150, 152, 154] }, 'ALL': { labels: ['Q1', 'Q2', 'Q3', 'Q4'], data: [118, 125, 139, 150] } };
+
+        function updatePerformanceChart(range) {
+            if (performanceChartInstance) performanceChartInstance.destroy();
+            const chartData = performanceData[range];
+            performanceChartInstance = new Chart(perfCtx, {
+                type: 'line', data: { labels: chartData.labels, datasets: [{ label: 'Value (k)', data: chartData.data, borderColor: 'rgb(79, 70, 229)', backgroundColor: 'rgba(79, 70, 229, 0.1)', tension: 0.4, fill: true, }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#374151' }, ticks: { color: '#9CA3AF' } }, y: { grid: { color: '#374151' }, ticks: { color: '#9CA3AF', callback: (value) => `$${value}k` } } } }
+            });
+        }
+        updatePerformanceChart('ALL');
+        const filterButtons = document.querySelectorAll('#chart-filters button');
+        filterButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                filterButtons.forEach(btn => btn.classList.remove('active'));
+                button.classList.add('active');
+                updatePerformanceChart(button.getAttribute('data-range'));
+            });
+        });
 
     </script>
 </body>
