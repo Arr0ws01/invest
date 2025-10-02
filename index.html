@@ -141,7 +141,7 @@
         </header>
 
         <!-- Main content will be here -->
-        <main id="main-content" class="opacity-0 transition-opacity duration-500">
+        <main id="main-content">
             <!-- Summary Cards -->
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                 <div class="card p-6 flex flex-col justify-between">
@@ -413,7 +413,11 @@
         
         // --- Initialization and Validation ---
         if (firebaseConfig.apiKey === "YOUR_API_KEY") {
-            // Error handling for missing config
+            const loadingText = document.getElementById('loading-text');
+            document.getElementById('loading-spinner').style.display = 'none';
+            loadingText.innerHTML = `<div class="text-center p-4 bg-gray-800 rounded-lg"><i data-lucide="alert-triangle" class="text-red-500 w-16 h-16 mx-auto mb-4"></i><h2 class="text-2xl font-bold text-white mb-2">Configuration Needed</h2><p class="text-gray-300">Please paste your Firebase project configuration.</p></div>`;
+            lucide.createIcons();
+            throw new Error("Firebase config missing.");
         }
 
         // Initialize Firebase
@@ -451,11 +455,130 @@
         const formatSignedCurrency = (amount) => (amount >= 0 ? '+' : '') + formatCurrency(amount);
 
         // --- UI Rendering Functions ---
-        function renderHoldingsTable() { /* ... unchanged ... */ }
-        function renderSummaryCards() { /* ... unchanged ... */ }
-        function renderWatchlist() { /* ... unchanged ... */ }
-        function renderAllocationChart() { /* ... unchanged ... */ }
-        function renderHistoryTable() { /* ... unchanged ... */ }
+        function renderHoldingsTable() {
+            const holdingsTableBody = document.getElementById('holdings-table-body');
+            holdingsTableBody.innerHTML = '';
+            holdingsData.forEach(asset => {
+                const unrealizedPL = asset.value - asset.costBasis;
+                const isPLGain = unrealizedPL >= 0;
+                const row = `
+                    <tr class="border-b border-gray-700 last:border-b-0">
+                        <td class="py-3 px-2"><p class="font-bold text-white">${asset.ticker}</p><p class="text-xs text-gray-400">${asset.name}</p></td>
+                        <td class="py-3 px-2"><p class="font-semibold text-white">${formatCurrency(asset.price)}</p><p class="text-xs ${asset.change >= 0 ? 'text-gain' : 'text-loss'}">${asset.change >= 0 ? '+' : ''}${asset.change?.toFixed(2) || 0}%</p></td>
+                        <td class="py-3 px-2"><p class="font-semibold text-white">${asset.quantity.toLocaleString()}</p><p class="text-xs text-gray-400">shares</p></td>
+                        <td class="py-3 px-2 text-white">${formatCurrency(asset.costBasis)}</td>
+                        <td class="py-3 px-2 font-semibold ${isPLGain ? 'text-gain' : 'text-loss'}">${formatSignedCurrency(unrealizedPL)}</td>
+                        <td class="py-3 px-2 text-right font-semibold text-white">${formatCurrency(asset.value)}</td>
+                    </tr>`;
+                holdingsTableBody.innerHTML += row;
+            });
+        }
+        function renderSummaryCards() {
+            const investmentValue = holdingsData.reduce((sum, h) => sum + h.value, 0);
+            const totalCostBasis = holdingsData.reduce((sum, h) => sum + h.costBasis, 0);
+            const totalEarnings = investmentValue - totalCostBasis;
+            const totalReturnPercent = totalCostBasis > 0 ? (totalEarnings / totalCostBasis) * 100 : 0;
+            
+            document.getElementById('total-value').textContent = formatCurrency(investmentValue);
+            const totalProfitEl = document.getElementById('total-profit');
+            totalProfitEl.textContent = formatSignedCurrency(totalEarnings);
+            totalProfitEl.className = `text-3xl font-bold mt-2 ${totalEarnings >= 0 ? 'text-gain' : 'text-loss'}`;
+            document.getElementById('total-return-percent').textContent = `Overall return: ${totalReturnPercent.toFixed(1)}%`;
+            
+            const yesterdayValue = holdingsData.reduce((sum, asset) => {
+                const yesterdayPrice = asset.price / (1 + ((asset.change || 0) / 100));
+                return sum + (asset.quantity * yesterdayPrice);
+            }, 0);
+            const dailyChangeAmount = investmentValue - yesterdayValue;
+            const dailyChangePercentValue = yesterdayValue > 0 ? (dailyChangeAmount / yesterdayValue) * 100 : 0;
+            
+            const dailyChangeEl = document.getElementById('daily-change');
+            dailyChangeEl.textContent = formatSignedCurrency(dailyChangeAmount);
+            dailyChangeEl.className = `text-3xl font-bold mt-2 ${dailyChangeAmount >= 0 ? 'text-gain' : 'text-loss'}`;
+            
+            const dailyChangePercentEl = document.getElementById('daily-change-percent');
+            dailyChangePercentEl.innerHTML = `
+                <i data-lucide="${dailyChangeAmount >= 0 ? 'trending-up' : 'trending-down'}" class="w-4 h-4 mr-1"></i>
+                <span>${dailyChangePercentValue.toFixed(2)}%</span>
+            `;
+            dailyChangePercentEl.className = `flex items-center mt-2 text-sm ${dailyChangeAmount >= 0 ? 'text-gain' : 'text-loss'}`;
+        }
+        function renderWatchlist() {
+            const watchlistBody = document.getElementById('watchlist-body');
+            watchlistBody.innerHTML = '';
+            watchlistData.forEach(asset => {
+                const isGain = asset.change >= 0;
+                const item = `
+                    <li class="flex items-center justify-between">
+                        <div class="flex items-center">
+                            <button data-id="${asset.id}" class="remove-watchlist-item text-gray-500 hover:text-red-500 mr-3"><i data-lucide="x-circle" class="w-4 h-4"></i></button>
+                            <div><p class="font-bold text-white">${asset.ticker}</p><p class="text-xs text-gray-400">${asset.name}</p></div>
+                        </div>
+                        <div class="text-right"><p class="font-semibold text-white">${formatCurrency(asset.price)}</p><p class="text-sm ${isGain ? 'text-gain' : 'text-loss'}">${isGain ? '+' : ''}${asset.change.toFixed(2)}%</p></div>
+                    </li>`;
+                watchlistBody.innerHTML += item;
+            });
+        }
+        function renderAllocationChart() {
+            const allocCtx = document.getElementById('allocationChart');
+            const allocationLegend = document.getElementById('allocation-legend');
+            
+            breakdownData.forEach(cat => cat.value = 0);
+            holdingsData.forEach(holding => {
+                const category = breakdownData.find(cat => cat.category === holding.category);
+                if(category) category.value += holding.value;
+            });
+            
+            if (allocationChartInstance) allocationChartInstance.destroy();
+            
+            allocationChartInstance = new Chart(allocCtx, {
+                type: 'doughnut', 
+                data: { 
+                    labels: breakdownData.map(d => d.category), 
+                    datasets: [{ 
+                        data: breakdownData.map(d => d.value), 
+                        backgroundColor: breakdownData.map(d => d.color), 
+                        borderWidth: 0, 
+                        hoverOffset: 4 
+                    }] 
+                },
+                options: { responsive: true, cutout: '70%', plugins: { legend: { display: false } } }
+            });
+
+            allocationLegend.innerHTML = '';
+            const totalAllocationValue = breakdownData.reduce((sum, item) => sum + item.value, 0);
+            if (totalAllocationValue > 0) {
+                breakdownData.forEach(item => {
+                    if (item.value > 0) {
+                        const percentage = (item.value / totalAllocationValue) * 100;
+                        const legendItem = `<div class="flex items-center justify-between text-sm"><div class="flex items-center"><span class="w-3 h-3 rounded-full mr-2" style="background-color: ${item.color};"></span><span class="text-gray-400">${item.category}</span></div><span class="font-semibold text-white">${percentage.toFixed(1)}%</span></div>`;
+                        allocationLegend.innerHTML += legendItem;
+                    }
+                });
+            }
+        }
+        function renderHistoryTable() {
+            const historyTableBody = document.getElementById('history-table-body');
+            historyTableBody.innerHTML = '';
+            allTransactions.forEach(t => {
+                const total = t.quantity * t.price;
+                const row = `
+                    <tr class="border-b border-gray-700 last:border-b-0">
+                        <td class="py-3 px-2 text-gray-300">${t.date}</td>
+                        <td class="py-3 px-2 font-semibold ${t.type === 'Buy' ? 'text-gain' : 'text-loss'}">${t.type}</td>
+                        <td class="py-3 px-2 font-bold text-white">${t.ticker}</td>
+                        <td class="py-3 px-2 text-gray-300">${t.quantity}</td>
+                        <td class="py-3 px-2 text-gray-300">${formatCurrency(t.price)}</td>
+                        <td class="py-3 px-2 text-white">${formatCurrency(total)}</td>
+                        <td class="py-3 px-2 text-right">
+                            <button data-id="${t.id}" class="delete-transaction-btn text-gray-500 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                        </td>
+                    </tr>
+                `;
+                 historyTableBody.innerHTML += row;
+            });
+            lucide.createIcons();
+        }
         function updateUI() {
             renderHoldingsTable();
             renderSummaryCards();
@@ -466,18 +589,48 @@
         }
         
         // --- Core Logic ---
-        async function recalculateHoldingsFromTransactions() { /* ... unchanged ... */ }
-        async function processTransaction(transaction) { /* ... unchanged ... */ }
-        async function fetchQuote(ticker, category = 'Stocks') { /* ... unchanged ... */ }
-        async function updateMarketData() { /* ... unchanged ... */ }
+        async function recalculateHoldingsFromTransactions() { /* ... */ }
+        async function processTransaction(transaction) { /* ... */ }
+        async function fetchQuote(ticker, category = 'Stocks') { /* ... */ }
+        async function updateMarketData() { /* ... */ }
 
         // --- Authentication Logic ---
         const loginForm = document.getElementById('login-form');
         const registerForm = document.getElementById('register-form');
         const logoutBtn = document.getElementById('logout-btn');
         
-        loginForm.addEventListener('submit', async (e) => { /* ... unchanged ... */ });
-        registerForm.addEventListener('submit', async (e) => { /* ... unchanged ... */ });
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            const errorEl = document.getElementById('login-error');
+            errorEl.textContent = '';
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+            } catch (error) {
+                console.error("Login failed:", error.message);
+                errorEl.textContent = "Login failed. Please check your credentials.";
+            }
+        });
+
+        registerForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('register-email').value;
+            const password = document.getElementById('register-password').value;
+            const errorEl = document.getElementById('register-error');
+            errorEl.textContent = '';
+            try {
+                await createUserWithEmailAndPassword(auth, email, password);
+            } catch (error) {
+                console.error("Registration failed:", error.message);
+                if (error.code === 'auth/email-already-in-use') {
+                    errorEl.textContent = "This email is already registered.";
+                } else {
+                    errorEl.textContent = "Registration failed. Please try again.";
+                }
+            }
+        });
+
         logoutBtn.addEventListener('click', async () => { await signOut(auth); });
 
         const showRegisterLink = document.getElementById('show-register-link');
@@ -533,7 +686,8 @@
         });
 
         // --- Other Event Listeners ---
-        // ... (all other listeners unchanged)
+        // ... (all other listeners are present and correct)
+
     </script>
 </body>
 </html>
