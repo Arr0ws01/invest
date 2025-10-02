@@ -65,7 +65,7 @@
         <header class="mb-8 flex flex-col sm:flex-row justify-between items-start">
             <div>
                 <h1 class="text-3xl font-bold text-white">Investment Portfolio</h1>
-                <p class="text-gray-400">Welcome back, Arrow</p>
+                <p class="text-gray-400">Welcome back, Alex</p>
                 <div class="mt-2">
                      <p id="user-id-display" class="text-xs text-gray-500 font-mono"></p>
                 </div>
@@ -744,15 +744,21 @@
             const newTicker = tickerInput.value.trim().toUpperCase();
             if (newTicker) {
                 if (watchlistData.some(item => item.ticker === newTicker)) { tickerInput.value = ''; return; }
-                const watchlistRef = collection(db, 'users', userId, 'watchlist');
-                const quote = await fetchQuote(newTicker);
                 
-                await addDoc(watchlistRef, {
-                    ticker: newTicker, name: quote ? (quote.name || 'New Asset') : 'New Asset',
-                    price: quote ? quote.price : 0, change: quote ? quote.change : 0,
-                    createdAt: serverTimestamp()
-                });
-                tickerInput.value = '';
+                try {
+                    const watchlistRef = collection(db, 'users', userId, 'watchlist');
+                    const quote = await fetchQuote(newTicker);
+                    
+                    await addDoc(watchlistRef, {
+                        ticker: newTicker, name: quote ? (quote.name || 'New Asset') : 'New Asset',
+                        price: quote ? quote.price : 0, change: quote ? quote.change : 0,
+                        createdAt: serverTimestamp()
+                    });
+                    tickerInput.value = '';
+                } catch (error) {
+                    console.error("Error adding to watchlist:", error);
+                    alert("Could not add item to watchlist. Please check console for errors.");
+                }
             }
         });
 
@@ -791,5 +797,6 @@
     </script>
 </body>
 </html>
+
 
 
